@@ -565,8 +565,10 @@ def create_acc(mechs,
                      "ArbFileMorphology.replace_axon after loading "
                      "morphology in Arbor.")
         replace_axon_json = json.dumps(replace_axon)
+        morphology_acc = pathlib.Path(morphology).with_suffix('.acc')
     else:
         replace_axon_json = None
+        morphology_acc = None
 
     templates = _read_templates(template_dir, template_filename)
 
@@ -631,6 +633,7 @@ def create_acc(mechs,
                             banner=banner,
                             morphology=morphology,
                             replace_axon=replace_axon_json,
+                            morphology_acc=morphology_acc,
                             filenames=filenames,
                             regions=_loc2arb_region,
                             global_mechs=global_mechs,
@@ -657,6 +660,12 @@ def output_acc(output_dir, cell, parameters,
     '''
     output = cell.create_acc(parameters, template_filename, sim=sim)
 
+    cell_json = [comp_rendered
+                 for comp, comp_rendered in output.items()
+                 if pathlib.Path(comp).suffix == '.json']
+    assert(len(cell_json) == 1)
+    cell_json = json.loads(cell_json[0])
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     for comp, comp_rendered in output.items():
@@ -667,10 +676,38 @@ def output_acc(output_dir, cell, parameters,
             f.write(comp_rendered)
 
     morpho_filename = os.path.join(
-        output_dir, os.path.basename(cell.morphology.morphology_path))
+        output_dir, cell_json['morphology']['original'])
     if os.path.exists(morpho_filename):
         raise RuntimeError("%s already exists!" % morpho_filename)
-    shutil.copy2(cell.morphology.morphology_path, output_dir)
+    shutil.copy2(cell.morphology.morphology_path, morpho_filename)
+
+    if 'replace_axon' in cell_json['morphology']:
+        replace_axon = cell_json['morphology']['replace_axon']
+    else:
+        replace_axon = None
+
+    if morpho_filename.endswith('.swc'):
+        morpho = arbor.load_swc_arbor(morpho_filename)
+        if replace_axon is not None:
+            morpho = ArbFileMorphology.replace_axon(morpho, replace_axon)
+    elif morpho_filename.endswith('.asc'):
+        import time
+        start_time = time.time()
+        morpho = arbor.load_asc(morpho_filename)
+        if replace_axon is not None:
+            morpho = \
+                ArbFileMorphology.replace_axon(morpho.morphology, replace_axon)
+        else:
+            morpho = morpho.morphology
+        end_time = time.time()
+        print("Loading ASC took {}".format(end_time - start_time))
+    else:
+        raise RuntimeError(
+            'Unsupported morphology {} (only .swc and .asc supported)'.format(
+                morpho_filename))
+    arbor.write_component(
+        morpho,
+        os.path.join(output_dir, cell_json['morphology']['acc']))
 
 
 # Read the mixed JSON/ACC-output, to be moved to Arbor in future release
@@ -687,32 +724,21 @@ def read_acc(cell_json_filename):
 
     cell_json_dir = os.path.dirname(cell_json_filename)
 
-    morphology_filename = os.path.join(cell_json_dir,
-                                       cell_json['morphology']['path'])
-    if 'replace_axon' in cell_json['morphology']:
-        replace_axon = cell_json['morphology']['replace_axon']
-    else:
-        replace_axon = None
-
-    if morphology_filename.endswith('.swc'):
-        morpho = arbor.load_swc_arbor(morphology_filename)
-        if replace_axon is not None:
-            morpho = ArbFileMorphology.replace_axon(morpho, replace_axon)
-    elif morphology_filename.endswith('.asc'):
-        morpho = arbor.load_asc(morphology_filename)
-        if replace_axon is not None:
-            morpho = \
-                ArbFileMorphology.replace_axon(morpho.morphology, replace_axon)
-        else:
-            morpho = morpho.morphology
-    else:
-        raise RuntimeError(
-            'Unsupported morphology {} (only .swc and .asc supported)'.format(
-                morphology_filename))
-
+    import time
+    start_time = time.time()
+    morpho = arbor.load_component(
+        os.path.join(cell_json_dir, cell_json['morphology']['acc'])).component
+    end_time = time.time()
+    print("Loading ACC took {}".format(end_time - start_time))
+    start_time = time.time()
     labels = arbor.load_component(
         os.path.join(cell_json_dir, cell_json['label_dict'])).component
+    end_time = time.time()
+    print("Loading labels took {}".format(end_time - start_time))
+    start_time = time.time()
     decor = arbor.load_component(
         os.path.join(cell_json_dir, cell_json['decor'])).component
+    end_time = time.time()
+    print("Loading decor took {}".format(end_time - start_time))
 
     return cell_json, morpho, labels, decor
